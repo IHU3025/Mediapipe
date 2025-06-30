@@ -91,8 +91,8 @@ export default function ElbowExercise() {
         drawingUtils.drawLandmarks(lm);
         drawingUtils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS);
 
-        const elbow = lm[13]; 
-        const wrist = lm[15]; 
+    //const elbow = lm[13]; 
+     //   #const wrist = lm[15]; 
 
         const now = Date.now();
 
@@ -108,20 +108,20 @@ export default function ElbowExercise() {
           }
         }
 
-        const wristX = wrist.x;
-        const elbowX = elbow.x;
+       // const wristX = wrist.x;
+        //const elbowX = elbow.x;
 
-        if (exerciseStep === "supination" && wristX > elbowX + 0.05) {
-        setStepResult(prev => ({ ...prev, supination: true }));
-        setExerciseStep("pronation");
-        setStartTime(Date.now());
-        }
+        // if (exerciseStep === "supination" && wristX > elbowX + 0.05) {
+        // setStepResult(prev => ({ ...prev, supination: true }));
+        // setExerciseStep("pronation");
+        // setStartTime(Date.now());
+        // }
 
-        if (exerciseStep === "pronation" && wristX < elbowX - 0.05) {
-        setStepResult(prev => ({ ...prev, pronation: true }));
-        setExerciseStep("done");
-        setWebcamRunning(false);
-        }
+        // if (exerciseStep === "pronation" && wristX < elbowX - 0.05) {
+        // setStepResult(prev => ({ ...prev, pronation: true }));
+        // setExerciseStep("done");
+        // setWebcamRunning(false);
+        // }
       }
     }
 

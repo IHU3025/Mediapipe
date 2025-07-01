@@ -16,7 +16,9 @@ if (typeof window !== "undefined") {
 
 export default function ElbowExercise() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const poseCanvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const agoraVideoRef = useRef<HTMLDivElement>(null);
+
   const [poseLandmarker, setPoseLandmarker] = useState<PoseLandmarker | null>(null);
   const [webcamRunning, setWebcamRunning] = useState(false);
   const [exerciseStep, setExerciseStep] = useState<"extension" | "flexion" | "done" | null>(null);
@@ -25,9 +27,9 @@ export default function ElbowExercise() {
 
   const [agoraClient, setAgoraClient] = useState<any>(null);
   const [localTracks, setLocalTracks] = useState<any[]>([]);
-  const [remoteUsers, setRemoteUsers] = useState<{ [uid: string]: any }>({});
+  const [remoteUsers, setRemoteUsers] = useState<{[uid: string]: any}>({});
 
-  const animationFrameRef = useRef<number | null>(null);
+  const animationFrameRef = useRef<number|null>(null);
   const lastVideoTimeRef = useRef(-1);
 
   useEffect(() => {
@@ -37,7 +39,7 @@ export default function ElbowExercise() {
       );
       const landmarker = await PoseLandmarker.createFromOptions(vision, {
         baseOptions: {
-          modelAssetPath: "/models/pose_landmarker_lite.task",
+          modelAssetPath: "/models/pose_landmarker_lite.task", 
           delegate: "GPU"
         },
         runningMode: "VIDEO",
@@ -74,7 +76,7 @@ export default function ElbowExercise() {
       }
     });
 
-    client.on("user-unpublished", (user: any) => {
+    client.on('user-unpublished', (user: any) => {
       setRemoteUsers(prev => {
         const newUsers = { ...prev };
         delete newUsers[user.uid];
@@ -86,45 +88,49 @@ export default function ElbowExercise() {
   };
 
   const startWebcam = async () => {
-    const video = videoRef.current;
-    if (!video || !poseLandmarker) return;
+    if (!poseLandmarker) return;
 
     try {
+      const webcamStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const video = videoRef.current;
+      if (!video) return;
+      video.srcObject = webcamStream;
+      await video.play();
+
+      const canvas = canvasRef.current;
+      if (canvas) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      }
+
       const client = agoraClient || await initAgora();
       if (!client) return;
 
-      const APP_ID = '1be4a451d0d74ab59de9cf4d572016cb';
-      const CHANNEL = 'exercise-channel';
-      const TOKEN = null;
+      await client.join(
+        '1be4a451d0d74ab59de9cf4d572016cb',
+        'exercise-channel',
+        null
+      );
 
-      await client.join(APP_ID, CHANNEL, TOKEN);
+      const originalTrack = webcamStream.getVideoTracks()[0];
+      const cameraTrack = await AgoraRTC.createCameraVideoTrack({
+        mediaStreamTrack: originalTrack.clone() // Clone the original track
+      });
+      setLocalTracks([cameraTrack]);
+      await client.publish([cameraTrack]);
 
-      const [micTrack, cameraTrack] = await Promise.all([
-        AgoraRTC.createMicrophoneAudioTrack(),
-        AgoraRTC.createCameraVideoTrack()
-      ]);
-
-      setLocalTracks([micTrack, cameraTrack]);
-      await client.publish([micTrack, cameraTrack]);
-
-      const webcamStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      video.srcObject = webcamStream;
-      video.onloadedmetadata = () => {
-        video.play();
-        const poseCanvas = poseCanvasRef.current;
-        if (poseCanvas) {
-          poseCanvas.width = video.videoWidth;
-          poseCanvas.height = video.videoHeight;
-        }
-        detectFrame();
-      };
+      if (agoraVideoRef.current) {
+        cameraTrack.play(agoraVideoRef.current);
+      }
 
       setWebcamRunning(true);
       setExerciseStep("extension");
       setStepResult({});
       setStartTime(Date.now());
+      detectFrame();
+
     } catch (error) {
-      console.error("Error initializing Agora:", error);
+      console.error("Error initializing webcam or Agora:", error);
     }
   };
 
@@ -140,7 +146,7 @@ export default function ElbowExercise() {
 
   const detectFrame = async () => {
     const video = videoRef.current;
-    const canvas = poseCanvasRef.current;
+    const canvas = canvasRef.current;
     if (!video || !canvas || !poseLandmarker || !webcamRunning) return;
 
     const ctx = canvas.getContext("2d");
@@ -150,18 +156,25 @@ export default function ElbowExercise() {
 
     if (video.currentTime !== lastVideoTimeRef.current) {
       lastVideoTimeRef.current = video.currentTime;
-      const results = poseLandmarker.detectForVideo(video, performance.now());
+      const results = await poseLandmarker.detectForVideo(video, performance.now());
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       if (results.landmarks && results.landmarks.length > 0) {
         const lm = results.landmarks[0];
-        drawingUtils.drawLandmarks(lm);
-        drawingUtils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS);
+        drawingUtils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS, { color: "#00FF00", lineWidth: 4 });
+        drawingUtils.drawLandmarks(lm, { color: "#FF0000", lineWidth: 2 });
 
         const shoulder = lm[11];
         const elbow = lm[13];
         const wrist = lm[15];
+
+        ctx.strokeStyle = "red";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(elbow.x * canvas.width, elbow.y * canvas.height);
+        ctx.lineTo(wrist.x * canvas.width, wrist.y * canvas.height);
+        ctx.stroke();
 
         const angle = getAngle(shoulder, elbow, wrist);
 
@@ -212,23 +225,27 @@ export default function ElbowExercise() {
       {exerciseStep === "done" && (
         <div className="mt-4 text-lg">
           <p>Extension: {stepResult.extension ? "Success" : "Failed"}</p>
-          <p>Flexion: {stepResult.flexion ? "Success" : "Failed"}</p>
+          <p> Flexion: {stepResult.flexion ? "Success" : "Failed"}</p>
         </div>
       )}
       <div className="relative w-full max-w-[640px] mx-auto">
         <video ref={videoRef} autoPlay playsInline muted className="w-full h-auto transform -scale-x-100" />
-        <canvas ref={poseCanvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none transform -scale-x-100" />
+        <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none transform -scale-x-100" />
+      </div>
 
+      <div className="relative w-full max-w-[640px] mx-auto mt-8">
+        <p className="text-sm text-gray-600">Agora View:</p>
+        <div ref={agoraVideoRef} className="w-full h-48 bg-gray-200" />
         {Object.values(remoteUsers).map(user => (
           <div key={user.uid} className="mt-4">
             <p>Remote User: {user.uid}</p>
-            <div
+            <div 
               ref={el => {
                 if (el && user.videoTrack) {
                   user.videoTrack.play(el);
                 }
               }}
-              className="w-full h-48 bg-gray-200"
+              className="w-full h-48 bg-gray-100"
             />
           </div>
         ))}

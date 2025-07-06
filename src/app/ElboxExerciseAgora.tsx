@@ -6,13 +6,7 @@ import {
   FilesetResolver,
   DrawingUtils
 } from "@mediapipe/tasks-vision";
-
-let AgoraRTC: any;
-if (typeof window !== "undefined") {
-  import("agora-rtc-sdk-ng").then((mod) => {
-    AgoraRTC = mod.default;
-  });
-}
+import AgoraRTC from "agora-rtc-sdk-ng";
 
 export default function ElbowExercise() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -24,14 +18,16 @@ export default function ElbowExercise() {
   const [exerciseStep, setExerciseStep] = useState<"extension" | "flexion" | "done" | null>(null);
   const [stepResult, setStepResult] = useState<{ extension?: boolean; flexion?: boolean }>({});
   const [startTime, setStartTime] = useState<number | null>(null);
+  const [feedback, setFeedback] = useState<string>("");
 
   const [agoraClient, setAgoraClient] = useState<any>(null);
   const [localTracks, setLocalTracks] = useState<any[]>([]);
-  const [remoteUsers, setRemoteUsers] = useState<{[uid: string]: any}>({});
+  const [remoteUsers, setRemoteUsers] = useState<{ [uid: string]: any }>({});
 
-  const animationFrameRef = useRef<number|null>(null);
+  const animationFrameRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef(-1);
 
+  // Initialize MediaPipe Pose Landmarker
   useEffect(() => {
     const createLandmarker = async () => {
       const vision = await FilesetResolver.forVisionTasks(
@@ -39,7 +35,7 @@ export default function ElbowExercise() {
       );
       const landmarker = await PoseLandmarker.createFromOptions(vision, {
         baseOptions: {
-          modelAssetPath: "/models/pose_landmarker_lite.task", 
+          modelAssetPath: "/models/pose_landmarker_lite.task",
           delegate: "GPU"
         },
         runningMode: "VIDEO",
@@ -54,83 +50,78 @@ export default function ElbowExercise() {
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
-      if (agoraClient) {
-        agoraClient.leave();
-      }
-      localTracks.forEach(track => track.stop());
     };
   }, []);
 
-  const initAgora = async () => {
-    if (!AgoraRTC) {
-      console.warn("AgoraRTC not available. Skipping Agora init.");
-      return null;
-    }
-    const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
-    setAgoraClient(client);
+  // Initialize Agora once
+  useEffect(() => {
+    const initAgora = async () => {
+      const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+      setAgoraClient(client);
 
-    client.on("user-published", async (user: any, mediaType: "audio" | "video") => {
-      await client.subscribe(user, mediaType);
-      if (mediaType === "video") {
-        setRemoteUsers(prev => ({ ...prev, [user.uid]: user }));
-      }
-    });
-
-    client.on('user-unpublished', (user: any) => {
-      setRemoteUsers(prev => {
-        const newUsers = { ...prev };
-        delete newUsers[user.uid];
-        return newUsers;
+      client.on("user-published", async (user, mediaType) => {
+        await client.subscribe(user, mediaType);
+        if (mediaType === "video") {
+          setRemoteUsers(prev => ({ ...prev, [user.uid]: user }));
+          user.videoTrack?.play(`remote-user-${user.uid}`);
+        }
       });
-    });
 
-    return client;
-  };
-
-  const startWebcam = async () => {
-    if (!poseLandmarker) return;
-
-    try {
-      const webcamStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      const video = videoRef.current;
-      if (!video) return;
-      video.srcObject = webcamStream;
-      await video.play();
-
-      const canvas = canvasRef.current;
-      if (canvas) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-      }
-
-      const client = agoraClient || await initAgora();
-      if (!client) return;
+      client.on("user-unpublished", user => {
+        setRemoteUsers(prev => {
+          const updated = { ...prev };
+          delete updated[user.uid];
+          return updated;
+        });
+      });
 
       await client.join(
-        '1be4a451d0d74ab59de9cf4d572016cb',
-        'exercise-channel',
-        null
+        "1be4a451d0d74ab59de9cf4d572016cb", // App ID
+        "exercise-channel", // Channel name
+        null // Token (null for testing if app certificate is disabled)
       );
 
-      const originalTrack = webcamStream.getVideoTracks()[0];
-      const cameraTrack = await AgoraRTC.createCameraVideoTrack({
-        mediaStreamTrack: originalTrack.clone() // Clone the original track
-      });
-      setLocalTracks([cameraTrack]);
-      await client.publish([cameraTrack]);
+      const localTrack = await AgoraRTC.createCameraVideoTrack();
+      setLocalTracks([localTrack]);
+      await client.publish([localTrack]);
 
       if (agoraVideoRef.current) {
-        cameraTrack.play(agoraVideoRef.current);
+        localTrack.play(agoraVideoRef.current);
       }
+    };
 
-      setWebcamRunning(true);
-      setExerciseStep("extension");
-      setStepResult({});
-      setStartTime(Date.now());
-      detectFrame();
+    initAgora();
 
+    return () => {
+      agoraClient?.leave();
+      localTracks.forEach(track => track.close());
+    };
+  }, []);
+
+  const startWebcam = async () => {
+    const video = videoRef.current;
+    if (!video || !poseLandmarker) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+
+      video.addEventListener("loadeddata", () => {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
+
+        setWebcamRunning(true);
+        setExerciseStep("extension");
+        setStepResult({});
+        setStartTime(Date.now());
+        setFeedback("");
+        detectFrame();
+      });
     } catch (error) {
-      console.error("Error initializing webcam or Agora:", error);
+      console.error("Error accessing webcam:", error);
     }
   };
 
@@ -156,51 +147,50 @@ export default function ElbowExercise() {
 
     if (video.currentTime !== lastVideoTimeRef.current) {
       lastVideoTimeRef.current = video.currentTime;
-      const results = await poseLandmarker.detectForVideo(video, performance.now());
+      const results = poseLandmarker.detectForVideo(video, performance.now());
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       if (results.landmarks && results.landmarks.length > 0) {
         const lm = results.landmarks[0];
-        drawingUtils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS, { color: "#00FF00", lineWidth: 4 });
-        drawingUtils.drawLandmarks(lm, { color: "#FF0000", lineWidth: 2 });
+        drawingUtils.drawLandmarks(lm);
+        drawingUtils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS);
 
         const shoulder = lm[11];
         const elbow = lm[13];
         const wrist = lm[15];
 
-        ctx.strokeStyle = "red";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(elbow.x * canvas.width, elbow.y * canvas.height);
-        ctx.lineTo(wrist.x * canvas.width, wrist.y * canvas.height);
-        ctx.stroke();
-
         const angle = getAngle(shoulder, elbow, wrist);
-
         const now = Date.now();
-        if (startTime && now - startTime > 20000) {
-          if (exerciseStep === "extension") {
-            setStepResult(prev => ({ ...prev, extension: false }));
+
+        if (exerciseStep === "extension") {
+          if (angle > 160 && !stepResult.extension) {
+            setStepResult(prev => ({ ...prev, extension: true }));
+            setFeedback("Extension success!");
+          } else if (!stepResult.extension) {
+            setFeedback("Keep straightening your elbow...");
+          }
+
+          if (now - (startTime ?? 0) > 10000) {
             setExerciseStep("flexion");
             setStartTime(Date.now());
-          } else if (exerciseStep === "flexion") {
-            setStepResult(prev => ({ ...prev, flexion: false }));
-            setExerciseStep("done");
-            setWebcamRunning(false);
+            setFeedback("");
           }
         }
 
-        if (exerciseStep === "extension" && angle > 160) {
-          setStepResult(prev => ({ ...prev, extension: true }));
-          setExerciseStep("flexion");
-          setStartTime(Date.now());
-        }
+        if (exerciseStep === "flexion") {
+          if (angle < 60 && !stepResult.flexion) {
+            setStepResult(prev => ({ ...prev, flexion: true }));
+            setFeedback("Flexion success!");
+          } else if (!stepResult.flexion) {
+            setFeedback("Keep bending your elbow...");
+          }
 
-        if (exerciseStep === "flexion" && angle < 60) {
-          setStepResult(prev => ({ ...prev, flexion: true }));
-          setExerciseStep("done");
-          setWebcamRunning(false);
+          if (now - (startTime ?? 0) > 10000) {
+            setExerciseStep("done");
+            setWebcamRunning(false);
+            setFeedback("Exercise complete!");
+          }
         }
       }
     }
@@ -213,42 +203,52 @@ export default function ElbowExercise() {
       <button
         onClick={startWebcam}
         className="px-4 py-2 mt-4 bg-blue-500 text-white rounded-lg"
-        disabled={webcamRunning}
       >
-        {webcamRunning ? "Exercise in Progress" : "Start Elbow Exercise"}
+        Start Elbow Exercise
       </button>
-      {exerciseStep !== "done" && exerciseStep && (
+
+      {exerciseStep && exerciseStep !== "done" && (
         <p className="mt-2 text-lg text-gray-700">
           Please {exerciseStep === "extension" ? "straighten" : "bend"} your left elbow
         </p>
       )}
+
+      {feedback && <p className="mt-1 text-sm text-green-600">{feedback}</p>}
+
       {exerciseStep === "done" && (
         <div className="mt-4 text-lg">
           <p>Extension: {stepResult.extension ? "Success" : "Failed"}</p>
-          <p> Flexion: {stepResult.flexion ? "Success" : "Failed"}</p>
+          <p>Flexion: {stepResult.flexion ? "Success" : "Failed"}</p>
         </div>
       )}
-      <div className="relative w-full max-w-[640px] mx-auto">
-        <video ref={videoRef} autoPlay playsInline muted className="w-full h-auto transform -scale-x-100" />
-        <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none transform -scale-x-100" />
-      </div>
 
-      <div className="relative w-full max-w-[640px] mx-auto mt-8">
-        <p className="text-sm text-gray-600">Agora View:</p>
-        <div ref={agoraVideoRef} className="w-full h-48 bg-gray-200" />
-        {Object.values(remoteUsers).map(user => (
-          <div key={user.uid} className="mt-4">
-            <p>Remote User: {user.uid}</p>
-            <div 
-              ref={el => {
-                if (el && user.videoTrack) {
-                  user.videoTrack.play(el);
-                }
-              }}
-              className="w-full h-48 bg-gray-100"
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6 w-full max-w-5xl">
+        {/* Pose Tracking View */}
+        <div className="relative">
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-auto transform -scale-x-100"
+          />
+          <canvas
+            ref={canvasRef}
+            className="absolute top-0 left-0 w-full h-full pointer-events-none transform -scale-x-100"
+          />
+        </div>
+
+        {/* Agora Video View */}
+        <div className="relative border rounded-lg overflow-hidden">
+          <div ref={agoraVideoRef} className="w-full h-[360px] bg-black" />
+          {Object.keys(remoteUsers).map(uid => (
+            <div
+              key={uid}
+              id={`remote-user-${uid}`}
+              className="w-full h-[180px] bg-gray-800 mt-2"
             />
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   );

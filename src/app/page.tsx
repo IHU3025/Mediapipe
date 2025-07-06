@@ -1,5 +1,5 @@
 import Image from "next/image";
-import ElbowExercise  from "./ElboxExerciseAgora";
+import ElbowExercise  from "./ElboxExercise";
 
 export default function Home() {
   return (
